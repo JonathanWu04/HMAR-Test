@@ -28,3 +28,4 @@ experiments/
 wandb/
 outputs/
 samples*/
+uncertainty_heatmaps/

@@ -73,6 +73,78 @@ We provide a sampling script `sample.py` to generate images with HMAR.
 python sample.py --checkpoint=hmar-d30
 ```
 
+## Token Uncertainty Heatmaps
+
+This fork adds a diagnostic mode for visualizing token-level probability
+distributions during HMAR sampling. The default `HMAR.generate(...)` behavior is
+unchanged. When `return_diagnostics=True` is used, generation also returns
+per-scale statistics computed from the logits before top-k/top-p truncation:
+
+- entropy, where higher values mean higher token uncertainty;
+- top-1 probability, where higher values mean higher confidence;
+- selected token probability;
+- top-1/top-2 probability margin;
+- top-k token ids and probabilities for each spatial token position.
+
+Generate heatmaps for one checkpoint:
+
+```bash
+python -m evaluate.generate_uncertainty_heatmaps \
+  --checkpoint=hmar-d16 \
+  --config_folder=evaluate \
+  --config_name=hmar-d16 \
+  --classes 3 207 \
+  --seeds 13 14 \
+  --samples_per_class 4 \
+  --output_dir=uncertainty_heatmaps/hmar-d16
+```
+
+Use an explicit finetuned checkpoint path:
+
+```bash
+python -m evaluate.generate_uncertainty_heatmaps \
+  --checkpoint=original-finetuned \
+  --checkpoint_path=/path/to/ar-ckpt-last.pth \
+  --config_folder=evaluate \
+  --config_name=hmar-d16 \
+  --classes 3 \
+  --seeds 13 \
+  --samples_per_class 4 \
+  --output_dir=uncertainty_heatmaps/original-finetuned
+```
+
+Compare two HMAR-format checkpoints with matched class ids, seeds, and sampling
+settings:
+
+```bash
+python -m evaluate.generate_uncertainty_heatmaps \
+  --checkpoint=original-finetuned \
+  --checkpoint_path=/path/to/original/ar-ckpt-last.pth \
+  --compare_checkpoint=other-hmar \
+  --compare_checkpoint_path=/path/to/other/ar-ckpt-last.pth \
+  --config_folder=evaluate \
+  --config_name=hmar-d16 \
+  --classes 3 \
+  --seeds 13 \
+  --samples_per_class 4 \
+  --output_dir=uncertainty_heatmaps/compare
+```
+
+Outputs include:
+
+- generated sample PNGs;
+- entropy heatmaps and overlays;
+- top-1 probability heatmaps and overlays;
+- optional `compare_checkpoint - checkpoint` entropy-difference heatmaps;
+- compressed `.npz` files containing the numeric token diagnostics;
+- JSON metadata with scale ids, pass names, sampling settings, classes, and seeds.
+
+Entropy heatmaps use blue for low uncertainty, yellow for middle values, and red
+for high uncertainty. Top-1 probability heatmaps use red for low confidence and
+green for high confidence. Difference heatmaps use blue when the comparison
+checkpoint is more certain, red when it is less certain, and white when the two
+checkpoints are similar.
+
 ## Evaluation
  
 To compute FID, Inception Score, Precision and Recall, or to reproduce the numbers from our paper

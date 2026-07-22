@@ -264,6 +264,53 @@ class HMAR(nn.Module):
             h = h_or_h_and_residual
         return self.mask_head(self.mask_head_nm(h.float(), cond_BD).float()).float()
 
+    @staticmethod
+    def _build_uncertainty_record(
+        logits_BlV: torch.Tensor,
+        selected_Bl: torch.Tensor,
+        scale_index: int,
+        pn: int,
+        pass_name: str,
+        refinement_step: int,
+        diagnostic_topk: int,
+        mask_positions: Optional[torch.Tensor] = None,
+    ):
+        logits_BlV = logits_BlV.detach().float()
+        log_probs_BlV = torch.log_softmax(logits_BlV, dim=-1)
+        probs_BlV = log_probs_BlV.exp()
+        entropy_Bl = -(probs_BlV * log_probs_BlV).sum(dim=-1)
+        selected_prob_Bl = torch.gather(
+            probs_BlV, 2, selected_Bl.unsqueeze(-1)
+        ).squeeze(-1)
+        topk = min(max(2, diagnostic_topk), probs_BlV.shape[-1])
+        topk_probs_BlK, topk_indices_BlK = torch.topk(probs_BlV, topk, dim=-1)
+        top1_prob_Bl = topk_probs_BlK[..., 0]
+        top2_prob_Bl = topk_probs_BlK[..., 1]
+        margin_Bl = top1_prob_Bl - top2_prob_Bl
+
+        record = {
+            "scale_index": scale_index,
+            "pn": pn,
+            "pass": pass_name,
+            "refinement_step": refinement_step,
+            "selected_token": selected_Bl.detach().view(selected_Bl.shape[0], pn, pn).cpu(),
+            "selected_prob": selected_prob_Bl.view(selected_Bl.shape[0], pn, pn).cpu(),
+            "entropy": entropy_Bl.view(selected_Bl.shape[0], pn, pn).cpu(),
+            "top1_prob": top1_prob_Bl.view(selected_Bl.shape[0], pn, pn).cpu(),
+            "top2_prob": top2_prob_Bl.view(selected_Bl.shape[0], pn, pn).cpu(),
+            "top1_top2_margin": margin_Bl.view(selected_Bl.shape[0], pn, pn).cpu(),
+            "topk_probs": topk_probs_BlK.view(selected_Bl.shape[0], pn, pn, topk).cpu(),
+            "topk_indices": topk_indices_BlK.view(selected_Bl.shape[0], pn, pn, topk).cpu(),
+        }
+        if mask_positions is not None:
+            active_mask_Bl = torch.zeros_like(selected_Bl, dtype=torch.bool)
+            active_mask_Bl.scatter_(1, mask_positions, True)
+            record["active_mask"] = active_mask_Bl.view(
+                selected_Bl.shape[0], pn, pn
+            ).cpu()
+            record["mask_positions"] = mask_positions.detach().cpu()
+        return record
+
     def forward(
         self,
         label_B: torch.LongTensor,
@@ -329,7 +376,9 @@ class HMAR(nn.Module):
         num_samples=1,
         mask=True,
         mask_schedule=None,
-        kv_cache=False # Only used to benchmark and compare performance to VAR
+        kv_cache=False, # Only used to benchmark and compare performance to VAR
+        return_diagnostics=False,
+        diagnostic_topk=5,
     ) -> torch.Tensor:
         
         #TODO: Support sampling with gumbel_softmax like in MaskGIT and VAR, when more_smooth is True.
@@ -379,6 +428,7 @@ class HMAR(nn.Module):
 
         cur_L = 0
         f_hat = sos.new_zeros(B, self.Cvae, self.patch_nums[-1], self.patch_nums[-1])
+        diagnostics = [] if return_diagnostics else None
     
         ntokens_per_steps =  mask_schedule
        
@@ -411,11 +461,26 @@ class HMAR(nn.Module):
 
             t = cfg * ratio
             logits_BlV = (1 + t) * logits_BlV[:B] - t * logits_BlV[B:]
+            logits_BlV_diagnostic = (
+                logits_BlV.detach().float().clone() if return_diagnostics else None
+            )
 
             idx_Bl = sample_with_top_k_top_p_(
                 logits_BlV, rng=rng, top_k=top_k, top_p=top_p, num_samples=num_samples
             )
             idx_Bl = idx_Bl[:, :, 0]
+            if return_diagnostics:
+                diagnostics.append(
+                    self._build_uncertainty_record(
+                        logits_BlV_diagnostic,
+                        idx_Bl,
+                        scale_index=si,
+                        pn=pn,
+                        pass_name="next_scale",
+                        refinement_step=0,
+                        diagnostic_topk=diagnostic_topk,
+                    )
+                )
             h_BChw = self.vae_quant_proxy[0].embedding(idx_Bl)
 
             h_BChw = h_BChw.transpose_(1, 2).reshape(B, self.Cvae, pn, pn)
@@ -476,6 +541,11 @@ class HMAR(nn.Module):
                     logits_BlV_mask = (1 + t) * logits_BlV_mask[
                         :B
                     ] - t * logits_BlV_mask[B:]
+                    logits_BlV_mask_diagnostic = (
+                        logits_BlV_mask.detach().float().clone()
+                        if return_diagnostics
+                        else None
+                    )
 
                     idx_Bl_mask = sample_with_top_k_top_p_(
                         logits_BlV_mask,
@@ -485,6 +555,19 @@ class HMAR(nn.Module):
                         num_samples=num_samples,
                     )
                     idx_Bl_mask = idx_Bl_mask[:, :, 0]
+                    if return_diagnostics:
+                        diagnostics.append(
+                            self._build_uncertainty_record(
+                                logits_BlV_mask_diagnostic,
+                                idx_Bl_mask,
+                                scale_index=si,
+                                pn=pn,
+                                pass_name="mask_refine",
+                                refinement_step=step,
+                                diagnostic_topk=diagnostic_topk,
+                                mask_positions=idx_to_mask,
+                            )
+                        )
 
                     idx_Bl[torch.arange(B).unsqueeze(1), idx_to_mask] = idx_Bl_mask[
                         torch.arange(B).unsqueeze(1), idx_to_mask
@@ -530,10 +613,11 @@ class HMAR(nn.Module):
         if kv_cache:
             for b in self.base_blocks: b.attn.kv_caching(False)
             for b in self.ns_blocks: b.attn.kv_caching(False)
-            
-        return (
-            self.vae_proxy[0].fhat_to_img(f_hat).add_(1).mul_(0.5)
-        )  # de-normalize, from [-1, 1] to [0, 1]
+
+        imgs = self.vae_proxy[0].fhat_to_img(f_hat).add_(1).mul_(0.5)
+        if return_diagnostics:
+            return imgs, diagnostics
+        return imgs  # de-normalize, from [-1, 1] to [0, 1]
 
     def load_base_and_ns_state_dict(self, state_dict: Mapping[str, Any]):
         # load the word embedding and bias
