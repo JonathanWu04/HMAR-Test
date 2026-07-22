@@ -48,16 +48,6 @@ def parse_args():
     parser.add_argument("--checkpoint", default="hmar-d16", help="Primary checkpoint name or path.")
     parser.add_argument("--checkpoint_path", default=None, help="Optional explicit primary checkpoint path.")
     parser.add_argument(
-        "--compare_checkpoint",
-        default=None,
-        help="Optional second HMAR-format checkpoint name or path for entropy difference heatmaps.",
-    )
-    parser.add_argument(
-        "--compare_checkpoint_path",
-        default=None,
-        help="Optional explicit second checkpoint path.",
-    )
-    parser.add_argument(
         "--config_folder",
         default="evaluate",
         choices=("evaluate", "sample"),
@@ -205,20 +195,6 @@ def confidence_colormap(confidence):
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def difference_colormap(values, max_abs):
-    if max_abs <= 0:
-        max_abs = 1.0
-    norm = np.clip(values.astype(np.float32) / max_abs, -1.0, 1.0)
-    blue = np.array([38, 89, 176], dtype=np.float32)
-    white = np.array([245, 245, 245], dtype=np.float32)
-    red = np.array([200, 50, 50], dtype=np.float32)
-    out = np.empty((*norm.shape, 3), dtype=np.float32)
-    negative = norm < 0
-    out[negative] = white + (blue - white) * (-norm[negative][..., None])
-    out[~negative] = white + (red - white) * norm[~negative][..., None]
-    return np.clip(out, 0, 255).astype(np.uint8)
-
-
 def resize_rgb(rgb, size):
     return np.array(Image.fromarray(rgb).resize(size, Image.Resampling.BILINEAR))
 
@@ -265,47 +241,6 @@ def save_record_images(output_dir, label, class_id, seed, sample_index, image_rg
     save_rgb(
         os.path.join(output_dir, f"{stem}_top1_prob_overlay.png"),
         overlay(image_rgb, confidence_rgb, cli_args.overlay_alpha),
-    )
-
-
-def save_difference_images(
-    output_dir,
-    primary_label,
-    compare_label,
-    class_id,
-    seed,
-    sample_index,
-    image_rgb,
-    primary_record,
-    compare_record,
-    cli_args,
-):
-    scale_index = int(primary_record["scale_index"])
-    if cli_args.scales is not None and scale_index not in cli_args.scales:
-        return
-    if (
-        primary_record["pass"] != compare_record["pass"]
-        or primary_record["refinement_step"] != compare_record["refinement_step"]
-        or int(primary_record["pn"]) != int(compare_record["pn"])
-    ):
-        return
-
-    diff = (
-        compare_record["entropy"][sample_index].numpy()
-        - primary_record["entropy"][sample_index].numpy()
-    )
-    max_abs = float(np.max(np.abs(diff)))
-    image_size = (image_rgb.shape[1], image_rgb.shape[0])
-    diff_rgb = resize_rgb(difference_colormap(diff, max_abs), image_size)
-    stem = (
-        f"{compare_label}_minus_{primary_label}_class{class_id:03d}_seed{seed}_"
-        f"sample{sample_index:02d}_scale{scale_index:02d}_pn{int(primary_record['pn']):02d}_"
-        f"{primary_record['pass']}_step{primary_record['refinement_step']}_entropy_diff"
-    )
-    save_rgb(os.path.join(output_dir, f"{stem}.png"), diff_rgb)
-    save_rgb(
-        os.path.join(output_dir, f"{stem}_overlay.png"),
-        overlay(image_rgb, diff_rgb, cli_args.overlay_alpha),
     )
 
 
@@ -373,19 +308,9 @@ def main():
     primary_label = safe_label(cli_args.checkpoint)
     primary_results = run_checkpoint(primary_label, primary_path, sampling_args, cli_args)
 
-    compare_results = None
-    compare_label = None
-    if cli_args.compare_checkpoint:
-        compare_path = resolve_checkpoint_path(
-            cli_args.compare_checkpoint, cli_args.compare_checkpoint_path
-        )
-        compare_label = safe_label(cli_args.compare_checkpoint)
-        compare_results = run_checkpoint(compare_label, compare_path, sampling_args, cli_args)
-
     run_metadata = {
         "checkpoint": cli_args.checkpoint,
         "checkpoint_path": primary_path,
-        "compare_checkpoint": cli_args.compare_checkpoint,
         "config_folder": cli_args.config_folder,
         "config_name": cli_args.config_name,
         "classes": cli_args.classes,
@@ -417,46 +342,6 @@ def main():
                     record,
                     cli_args,
                 )
-
-            if compare_results:
-                compare_images, compare_diagnostics = compare_results[(class_id, seed)]
-                compare_image_rgb = to_uint8_image(compare_images[sample_index])
-                compare_stem = (
-                    f"{compare_label}_class{class_id:03d}_seed{seed}_sample{sample_index:02d}"
-                )
-                save_image(
-                    compare_images[sample_index],
-                    os.path.join(cli_args.output_dir, f"{compare_stem}.png"),
-                )
-                for record in compare_diagnostics:
-                    save_record_images(
-                        cli_args.output_dir,
-                        compare_label,
-                        class_id,
-                        seed,
-                        sample_index,
-                        compare_image_rgb,
-                        record,
-                        cli_args,
-                    )
-                for primary_record, compare_record in zip(diagnostics, compare_diagnostics):
-                    save_difference_images(
-                        cli_args.output_dir,
-                        primary_label,
-                        compare_label,
-                        class_id,
-                        seed,
-                        sample_index,
-                        compare_image_rgb,
-                        primary_record,
-                        compare_record,
-                        cli_args,
-                    )
-        if compare_results:
-            compare_images, compare_diagnostics = compare_results[(class_id, seed)]
-            diagnostics_to_npz(
-                cli_args.output_dir, compare_label, class_id, seed, compare_images, compare_diagnostics
-            )
 
 
 if __name__ == "__main__":

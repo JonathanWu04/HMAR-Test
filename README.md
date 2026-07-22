@@ -113,37 +113,17 @@ python -m evaluate.generate_uncertainty_heatmaps \
   --output_dir=uncertainty_heatmaps/original-finetuned
 ```
 
-Compare two HMAR-format checkpoints with matched class ids, seeds, and sampling
-settings:
-
-```bash
-python -m evaluate.generate_uncertainty_heatmaps \
-  --checkpoint=original-finetuned \
-  --checkpoint_path=/path/to/original/ar-ckpt-last.pth \
-  --compare_checkpoint=other-hmar \
-  --compare_checkpoint_path=/path/to/other/ar-ckpt-last.pth \
-  --config_folder=evaluate \
-  --config_name=hmar-d16 \
-  --classes 3 \
-  --seeds 13 \
-  --samples_per_class 4 \
-  --output_dir=uncertainty_heatmaps/compare
-```
-
 Outputs include:
 
 - generated sample PNGs;
 - entropy heatmaps and overlays;
 - top-1 probability heatmaps and overlays;
-- optional `compare_checkpoint - checkpoint` entropy-difference heatmaps;
 - compressed `.npz` files containing the numeric token diagnostics;
 - JSON metadata with scale ids, pass names, sampling settings, classes, and seeds.
 
 Entropy heatmaps use blue for low uncertainty, yellow for middle values, and red
 for high uncertainty. Top-1 probability heatmaps use red for low confidence and
-green for high confidence. Difference heatmaps use blue when the comparison
-checkpoint is more certain, red when it is less certain, and white when the two
-checkpoints are similar.
+green for high confidence.
 
 ## Evaluation
  
