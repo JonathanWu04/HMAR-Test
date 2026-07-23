@@ -91,26 +91,40 @@ Generate heatmaps for one checkpoint:
 ```bash
 python -m evaluate.generate_uncertainty_heatmaps \
   --checkpoint=hmar-d16 \
-  --config_folder=evaluate \
-  --config_name=hmar-d16 \
-  --classes 3 207 \
-  --seeds 13 14 \
-  --samples_per_class 4 \
-  --output_dir=uncertainty_heatmaps/hmar-d16
+  --uncertainty_classes=3_207 \
+  --uncertainty_seeds=13_14 \
+  --samples_per_class=4
 ```
 
 Use an explicit finetuned checkpoint path:
 
 ```bash
 python -m evaluate.generate_uncertainty_heatmaps \
-  --checkpoint=original-finetuned \
+  --checkpoint=hmar-d16 \
   --checkpoint_path=/path/to/ar-ckpt-last.pth \
-  --config_folder=evaluate \
-  --config_name=hmar-d16 \
-  --classes 3 \
-  --seeds 13 \
-  --samples_per_class 4 \
-  --output_dir=uncertainty_heatmaps/original-finetuned
+  --run_name=original-finetuned \
+  --uncertainty_classes=3 \
+  --uncertainty_seeds=13 \
+  --samples_per_class=4 \
+  --output_subdir=baseline/original-finetuned
+```
+
+The script follows the same config style as evaluation: `--checkpoint=hmar-d16`
+loads `config/evaluate/hmar-d16.yaml` for `depth`, `cfg`, `top_k`, `top_p`,
+`mask`, and related sampling settings. Extra diagnostic arguments can be passed
+from the command line or added to the same YAML file:
+
+```yaml
+uncertainty_classes: "3_207"
+uncertainty_seeds: "13_14"
+samples_per_class: 4
+diagnostic_topk: 5
+diagnostic_scales: "7_8_9"
+overlay_alpha: 0.55
+normalize_entropy_per_map: False
+run_name: original-finetuned
+output_dir: outputs
+output_subdir: baseline/original-finetuned
 ```
 
 Outputs include:
@@ -119,11 +133,40 @@ Outputs include:
 - entropy heatmaps and overlays;
 - top-1 probability heatmaps and overlays;
 - compressed `.npz` files containing the numeric token diagnostics;
-- JSON metadata with scale ids, pass names, sampling settings, classes, and seeds.
+- JSON metadata with scale ids, pass names, sampling settings, classes, and seeds;
+- `log.txt` with run settings and per-record summary statistics.
 
 Entropy heatmaps use blue for low uncertainty, yellow for middle values, and red
 for high uncertainty. Top-1 probability heatmaps use red for low confidence and
 green for high confidence.
+
+By default outputs are written under:
+
+```bash
+outputs/uncertainty/<checkpoint>/
+```
+
+If `--output_subdir=baseline/original-finetuned` is provided, outputs are written
+under:
+
+```bash
+outputs/uncertainty/baseline/original-finetuned/
+```
+
+Inspect a diagnostics `.npz` file:
+
+```bash
+python -m evaluate.inspect_uncertainty_npz \
+  --npz=outputs/uncertainty/hmar-d16/hmar-d16_class003_seed13_diagnostics.npz
+```
+
+Save the per-record summary as CSV:
+
+```bash
+python -m evaluate.inspect_uncertainty_npz \
+  --npz=outputs/uncertainty/hmar-d16/hmar-d16_class003_seed13_diagnostics.npz \
+  --save_csv=outputs/uncertainty/hmar-d16/class003_seed13_summary.csv
+```
 
 ## Evaluation
  

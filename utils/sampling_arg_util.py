@@ -38,6 +38,20 @@ class Args(Tap):
     mask: bool = True
     mask_schedule = [[1], [1, 3], [1, 1, 2, 5], [16], [25], [36], [64], [100], [169], [256]]
 
+    # uncertainty diagnostics
+    checkpoint_path: str = None
+    run_name: str = ""
+    vae_path: str = "vae_ch160v4096z32.pth"
+    output_dir: str = "outputs"
+    output_subdir: str = ""
+    uncertainty_classes: str = "3"
+    uncertainty_seeds: str = "13"
+    samples_per_class: int = 4
+    diagnostic_topk: int = 5
+    diagnostic_scales: str = ""
+    overlay_alpha: float = 0.55
+    normalize_entropy_per_map: bool = False
+
     def seed_everything(self, benchmark: bool):
         _seed_everything(self.seed, benchmark)
 
