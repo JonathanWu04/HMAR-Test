@@ -102,7 +102,7 @@ sample 文件夹中包含原图、entropy heatmap、entropy overlay、top-1 prob
 
 ## 测试内容
 
-HMAR 在生成过程中会在每个 scale 为每个空间 token 位置产生 logits。uncertainty 诊断记录的是 top-k/top-p 截断之前的 logits 分布，因此反映的是模型原始 token 分布的不确定性。
+HMAR 在生成过程中会在每个 scale 为每个空间 token 位置产生 logits。uncertainty 诊断记录的是 top-k/top-p 截断之前的 logits 分布，因此反映的是模型原始 token 分布的不确定性，而不是截断后的采样分布。
 
 每个被记录的位置会保存以下内容：
 
@@ -156,16 +156,60 @@ overlay 通过 heatmap 和原图的 alpha blending 得到：
 overlay = image * (1 - overlay_alpha) + heatmap * overlay_alpha
 ```
 
+### entropy heatmap 颜色判定：相对值还是绝对值？
+
+这里的结论是：**默认情况下，entropy heatmap 的颜色是按 entropy 的绝对值判定的，不是按当前图内部的相对值判定。**
+
+具体原因如下：
+
+1. `normalize_map(values, vmin, vmax)` 会先把 entropy 线性归一化到 `[0, 1]`。
+2. `entropy_colormap(norm)` 再把归一化后的值映射成颜色：
+   - 接近 `0.0`：蓝色
+   - 接近 `0.5`：黄色
+   - 接近 `1.0`：红色
+3. 在默认配置 `normalize_entropy_per_map = False` 时，`save_record_images(...)` 使用的是固定范围：
+   - `entropy_vmin = 0.0`
+   - `entropy_vmax = math.log(4096)`
+
+由于 vocab size 是 4096，`math.log(4096)` 对应理论最大 entropy，所以默认着色是基于一个**固定全局范围** `[0, log(4096)]` 的绝对值映射。
+
+这意味着：
+
+- 不同 sample / scale / refinement step 之间的颜色可以直接比较；
+- 更红表示该位置 entropy 更高、更接近理论上界；
+- 不是“这一张图里最大值自动显示成红色”的相对着色。
+
+### 什么时候会变成相对值着色？
+
+只有当：
+
+```yaml
+normalize_entropy_per_map: True
+```
+
+或者命令行显式传入对应参数后，代码才会改成使用当前这张 entropy map 自身的最小值和最大值：
+
+- `entropy_vmin = entropy.min()`
+- `entropy_vmax = entropy.max()`
+
+这时 heatmap 才是**按当前图内部的相对值**进行着色。
+
+这意味着：
+
+- 图内仍然满足“蓝低、黄中、红高”；
+- 但颜色表达的是当前图内部的相对高低；
+- 不同图之间不再适合直接比较颜色强弱。
+
 ## 代码修改位置
 
 uncertainty heatmap 功能主要涉及以下文件：
 
-- `models/hmar.py`：`HMAR.generate(...)` 支持 `return_diagnostics=True`。生成 next-scale token 和 masked refinement token 时，会调用 `_build_uncertainty_record(...)` 收集 logits 统计结果。
+- `models/hmar.py`：`HMAR.generate(...)` 支持 `return_diagnostics=True`。生成 next-scale token 和 masked refinement token 时，会调用 `_build_uncertainty_record(...)` 收集 logits 统计。
 - `models/hmar.py`：`_build_uncertainty_record(...)` 负责计算 entropy、selected probability、top-k probability、top-1/top-2 margin，以及可选的 mask metadata。
-- `evaluate/generate_uncertainty_heatmaps.py`：heatmap 生成入口。负责加载 VQ-VAE 和 HMAR checkpoint，生成样本，保存 `.npz` 数值结果、metadata、单样本 heatmap/overlay，以及母目录下的 summary PNG。
+- `evaluate/generate_uncertainty_heatmaps.py`：heatmap 生成入口。负责加载 VQ-VAE 和 HMAR checkpoint，生成样本，保存 `.npz` 数值结果、metadata、单样本 heatmap/overlay，以及可视化使用的颜色映射与归一化逻辑。
 - `evaluate/generate_uncertainty_heatmaps.py`：新增 per-sample 子目录输出和 `save_uncertainty_summary(...)` 汇总图逻辑。
-- `utils/sampling_arg_util.py`：保留 CLI/default 参数，包括 `checkpoint_path`、`vae_path`、`output_dir`、class/seed/sample 设置、diagnostic top-k、scale 筛选、overlay alpha 和 entropy 归一化开关。
-- `config/evaluate/hmar-d16.yaml`、`config/evaluate/hmar-d20.yaml`、`config/evaluate/hmar-d24.yaml`、`config/evaluate/hmar-d30.yaml`：保存各模型的 evaluate 采样配置和 uncertainty 默认配置。
+- `utils/sampling_arg_util.py`：保留 CLI/default 参数，包括 `checkpoint_path`、`vae_path`、`output_dir`、class/seed/sample 设置、diagnostic top-k、scale 筛选、overlay alpha 和 `normalize_entropy_per_map`。
+- `config/evaluate/hmar-d16.yaml`、`config/evaluate/hmar-d20.yaml`、`config/evaluate/hmar-d24.yaml`、`config/evaluate/hmar-d30.yaml`：保存各模型的 evaluate 采样配置和 uncertainty 诊断参数。
 - `evaluate/inspect_uncertainty_npz.py`：用于检查 `.npz` 诊断文件，并可导出 summary CSV。
 
 默认的 sampling/evaluation 行为不受影响。只有调用 `HMAR.generate(..., return_diagnostics=True)` 时才会额外收集 uncertainty 记录。
