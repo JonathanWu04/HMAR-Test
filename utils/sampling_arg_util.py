@@ -40,7 +40,6 @@ class Args(Tap):
 
     # uncertainty diagnostics
     checkpoint_path: str = None
-    run_name: str = ""
     vae_path: str = "vae_ch160v4096z32.pth"
     output_dir: str = "outputs"
     output_subdir: str = ""

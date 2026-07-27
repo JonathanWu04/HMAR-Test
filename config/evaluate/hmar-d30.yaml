@@ -9,3 +9,10 @@ top_k: 650
 top_p: 0.99 
 mask: True
 more_smooth: False
+uncertainty_classes: "3_207"
+uncertainty_seeds: "13_14"
+samples_per_class: 4
+diagnostic_topk: 5
+diagnostic_scales: ""
+overlay_alpha: 0.55
+normalize_entropy_per_map: False

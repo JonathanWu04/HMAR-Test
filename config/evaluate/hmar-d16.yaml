@@ -4,8 +4,15 @@
 # To view a copy of this license, please refer to LICENSE
 
 depth: 16
-cfg: 1.7
-top_k: 1000
-top_p: 0.99 
+cfg: 1.3
+top_k: 600
+top_p: 0.95
 more_smooth: False
 mask: True
+uncertainty_classes: "3_40_80_207"
+uncertainty_seeds: "13_14_15"
+samples_per_class: 2
+diagnostic_topk: 5
+diagnostic_scales: ""
+overlay_alpha: 0.55
+normalize_entropy_per_map: False

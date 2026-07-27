@@ -8,11 +8,11 @@ import json
 import math
 import os
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from torchvision.utils import save_image
 
 from models import HMAR
@@ -32,6 +32,13 @@ def parse_int_list(value: str) -> List[int]:
 
 def safe_label(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.splitext(os.path.basename(value))[0])
+
+
+def safe_path_label(value: str) -> str:
+    normalized = os.path.splitext(os.path.normpath(value))[0]
+    normalized = normalized.strip(os.sep).replace(os.sep, "_")
+    label = re.sub(r"[^A-Za-z0-9_.-]+", "_", normalized).strip("_")
+    return label or safe_label(value)
 
 
 def resolve_checkpoint_path(args: Args) -> str:
@@ -71,11 +78,17 @@ def extract_hmar_state_dict(checkpoint):
     return cleaned
 
 
-def get_output_dir(args: Args) -> str:
-    checkpoint_label = safe_label(args.run_name or args.checkpoint)
+def get_output_dir(args: Args, checkpoint_path: str) -> str:
     if args.output_subdir is not None and len(args.output_subdir):
         return os.path.join(args.output_dir, "uncertainty", args.output_subdir)
-    return os.path.join(args.output_dir, "uncertainty", checkpoint_label)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return os.path.join(
+        args.output_dir,
+        "uncertainty",
+        "experiment",
+        timestamp,
+        safe_path_label(checkpoint_path),
+    )
 
 
 def log_line(output_dir: str, message: str):
@@ -165,6 +178,21 @@ def save_rgb(path: str, array: np.ndarray):
     Image.fromarray(array).save(path)
 
 
+def load_font(size: int, bold: bool = False):
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"
+        if bold
+        else "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size=size)
+    return ImageFont.load_default()
+
+
 def record_is_enabled(record: dict, scales: Optional[List[int]]) -> bool:
     return scales is None or int(record["scale_index"]) in scales
 
@@ -198,12 +226,9 @@ def add_record_indices(diagnostics: List[dict]) -> List[dict]:
     return diagnostics
 
 
-def save_record_images(output_dir: str, label: str, class_id: int, seed: int, sample_index: int, image_rgb: np.ndarray, record: dict, args: Args):
-    stem = (
-        f"{label}_class{class_id:03d}_seed{seed}_sample{sample_index:02d}_"
-        f"scale{int(record['scale_index']):02d}_pn{int(record['pn']):02d}_"
-        f"{record['pass']}_step{int(record['refinement_step'])}"
-    )
+def build_record_visuals(
+    image_rgb: np.ndarray, record: dict, sample_index: int, args: Args
+) -> Dict[str, np.ndarray]:
     entropy = record["entropy"][sample_index].numpy()
     top1_prob = record["top1_prob"][sample_index].numpy()
     image_size = (image_rgb.shape[1], image_rgb.shape[0])
@@ -220,16 +245,178 @@ def save_record_images(output_dir: str, label: str, class_id: int, seed: int, sa
     )
     confidence_rgb = resize_rgb(confidence_colormap(top1_prob), image_size)
 
-    save_rgb(os.path.join(output_dir, f"{stem}_entropy.png"), entropy_rgb)
+    return {
+        "entropy": entropy_rgb,
+        "entropy_overlay": overlay(image_rgb, entropy_rgb, args.overlay_alpha),
+        "top1_prob": confidence_rgb,
+        "top1_prob_overlay": overlay(image_rgb, confidence_rgb, args.overlay_alpha),
+    }
+
+
+def save_record_images(
+    output_dir: str,
+    label: str,
+    class_id: int,
+    seed: int,
+    sample_index: int,
+    image_rgb: np.ndarray,
+    record: dict,
+    args: Args,
+):
+    stem = (
+        f"{label}_class{class_id:03d}_seed{seed}_sample{sample_index:02d}_"
+        f"scale{int(record['scale_index']):02d}_pn{int(record['pn']):02d}_"
+        f"{record['pass']}_step{int(record['refinement_step'])}"
+    )
+    visuals = build_record_visuals(image_rgb, record, sample_index, args)
+
+    save_rgb(os.path.join(output_dir, f"{stem}_entropy.png"), visuals["entropy"])
     save_rgb(
         os.path.join(output_dir, f"{stem}_entropy_overlay.png"),
-        overlay(image_rgb, entropy_rgb, args.overlay_alpha),
+        visuals["entropy_overlay"],
     )
-    save_rgb(os.path.join(output_dir, f"{stem}_top1_prob.png"), confidence_rgb)
+    save_rgb(os.path.join(output_dir, f"{stem}_top1_prob.png"), visuals["top1_prob"])
     save_rgb(
         os.path.join(output_dir, f"{stem}_top1_prob_overlay.png"),
-        overlay(image_rgb, confidence_rgb, args.overlay_alpha),
+        visuals["top1_prob_overlay"],
     )
+    return visuals
+
+
+def sample_output_dir(output_dir: str, class_id: int, seed: int, sample_index: int) -> str:
+    return os.path.join(
+        output_dir, f"class{class_id:03d}_seed{seed}_sample{sample_index:02d}"
+    )
+
+
+def is_scale_summary_record(record: dict) -> bool:
+    return record["pass"] == "next_scale" and int(record["refinement_step"]) == 0
+
+
+def resize_summary_tile(array: np.ndarray, tile_size: int) -> Image.Image:
+    return Image.fromarray(array).resize((tile_size, tile_size), Image.Resampling.BILINEAR)
+
+
+def save_uncertainty_summary(output_dir: str, label: str, summary_rows: List[dict]) -> Optional[str]:
+    if len(summary_rows) == 0:
+        return None
+
+    summary_rows = sorted(
+        summary_rows,
+        key=lambda row: (row["class_id"], row["seed"], row["sample_index"]),
+    )
+    scale_columns = sorted(
+        {
+            (scale_index, payload["pn"])
+            for row in summary_rows
+            for scale_index, payload in row["overlays"].items()
+        },
+        key=lambda item: item[0],
+    )
+    if len(scale_columns) == 0:
+        return None
+
+    tile_size = min(
+        summary_rows[0]["original"].shape[0], summary_rows[0]["original"].shape[1]
+    )
+    label_width = 210
+    gap = 12
+    margin = 24
+    title_height = 48
+    header_height = 34
+    group_height = 34
+    row_gap = 16
+
+    row_count = len(summary_rows)
+    class_count = len({row["class_id"] for row in summary_rows})
+    column_count = len(scale_columns) + 1
+    width = margin * 2 + label_width + column_count * tile_size + (column_count - 1) * gap
+    height = (
+        margin * 2
+        + title_height
+        + header_height
+        + class_count * group_height
+        + row_count * tile_size
+        + max(0, row_count - 1) * row_gap
+    )
+
+    canvas = Image.new("RGB", (width, height), (250, 250, 248))
+    draw = ImageDraw.Draw(canvas)
+    title_font = load_font(24, bold=True)
+    header_font = load_font(16, bold=True)
+    body_font = load_font(15)
+    small_font = load_font(13)
+
+    y = margin
+    draw.text(
+        (margin, y),
+        f"Token uncertainty heatmap overlays - {label}",
+        fill=(25, 25, 25),
+        font=title_font,
+    )
+    y += title_height
+
+    x = margin + label_width
+    for scale_index, pn in scale_columns:
+        draw.text(
+            (x, y),
+            f"scale{scale_index:02d} / pn{pn:02d}",
+            fill=(40, 40, 40),
+            font=header_font,
+        )
+        x += tile_size + gap
+    draw.text((x, y), "original", fill=(40, 40, 40), font=header_font)
+    y += header_height
+
+    current_class_id = None
+    for row in summary_rows:
+        if row["class_id"] != current_class_id:
+            current_class_id = row["class_id"]
+            draw.rectangle(
+                (margin, y, width - margin, y + group_height - 8),
+                fill=(232, 235, 232),
+            )
+            draw.text(
+                (margin + 10, y + 6),
+                f"class{current_class_id:03d}",
+                fill=(25, 25, 25),
+                font=header_font,
+            )
+            y += group_height
+
+        row_label = f"seed{row['seed']}\nsample{row['sample_index']:02d}"
+        draw.text(
+            (margin + 10, y + tile_size // 2 - 18),
+            row_label,
+            fill=(45, 45, 45),
+            font=body_font,
+        )
+
+        x = margin + label_width
+        for scale_index, _ in scale_columns:
+            payload = row["overlays"].get(scale_index)
+            if payload is None:
+                draw.rectangle(
+                    (x, y, x + tile_size, y + tile_size),
+                    outline=(210, 210, 210),
+                    width=1,
+                )
+                draw.text(
+                    (x + 12, y + 12),
+                    "missing",
+                    fill=(120, 120, 120),
+                    font=small_font,
+                )
+            else:
+                canvas.paste(resize_summary_tile(payload["image"], tile_size), (x, y))
+            x += tile_size + gap
+
+        canvas.paste(resize_summary_tile(row["original"], tile_size), (x, y))
+        y += tile_size + row_gap
+
+    summary_path = os.path.join(output_dir, f"{label}_uncertainty_summary.png")
+    canvas.save(summary_path)
+    return summary_path
 
 
 def diagnostics_to_npz(output_dir: str, label: str, class_id: int, seed: int, images: torch.Tensor, diagnostics: List[dict]):
@@ -265,12 +452,13 @@ if __name__ == "__main__":
     args: Args = get_args(cfg_folder="evaluate")
     torch.set_default_device("cuda")
 
-    output_dir = get_output_dir(args)
+    resolved_checkpoint_path = resolve_checkpoint_path(args)
+    output_dir = get_output_dir(args, resolved_checkpoint_path)
     os.makedirs(output_dir, exist_ok=True)
     if os.path.exists(os.path.join(output_dir, "log.txt")):
         os.remove(os.path.join(output_dir, "log.txt"))
 
-    checkpoint_label = safe_label(args.run_name or args.checkpoint)
+    checkpoint_label = safe_path_label(resolved_checkpoint_path)
     classes = parse_int_list(args.uncertainty_classes)
     seeds = parse_int_list(args.uncertainty_seeds)
     scales = parse_int_list(args.diagnostic_scales)
@@ -293,7 +481,7 @@ if __name__ == "__main__":
     run_metadata = {
         "checkpoint": args.checkpoint,
         "checkpoint_path": checkpoint_path,
-        "run_name": args.run_name,
+        "checkpoint_label": checkpoint_label,
         "vae_path": args.vae_path,
         "output_dir": output_dir,
         "classes": classes,
@@ -313,6 +501,8 @@ if __name__ == "__main__":
     with open(os.path.join(output_dir, "run_metadata.json"), "w") as f:
         json.dump(run_metadata, f, indent=2)
     log_json(output_dir, "[run_metadata]", run_metadata)
+
+    summary_rows = []
 
     with torch.inference_mode():
         for class_id in classes:
@@ -338,12 +528,15 @@ if __name__ == "__main__":
                 for sample_index in range(images.shape[0]):
                     image_rgb = to_uint8_image(images[sample_index])
                     sample_stem = f"{checkpoint_label}_class{class_id:03d}_seed{seed}_sample{sample_index:02d}"
-                    save_image(images[sample_index], os.path.join(output_dir, f"{sample_stem}.png"))
+                    sample_dir = sample_output_dir(output_dir, class_id, seed, sample_index)
+                    os.makedirs(sample_dir, exist_ok=True)
+                    save_image(images[sample_index], os.path.join(sample_dir, f"{sample_stem}.png"))
+                    summary_overlays = {}
                     for record in diagnostics:
                         if not record_is_enabled(record, scales):
                             continue
-                        save_record_images(
-                            output_dir,
+                        visuals = save_record_images(
+                            sample_dir,
                             checkpoint_label,
                             class_id,
                             seed,
@@ -352,6 +545,11 @@ if __name__ == "__main__":
                             record,
                             args,
                         )
+                        if is_scale_summary_record(record):
+                            summary_overlays[int(record["scale_index"])] = {
+                                "pn": int(record["pn"]),
+                                "image": visuals["entropy_overlay"],
+                            }
                         log_json(
                             output_dir,
                             "[record_summary]",
@@ -361,5 +559,18 @@ if __name__ == "__main__":
                                 **summarize_record(record, sample_index),
                             },
                         )
+                    summary_rows.append(
+                        {
+                            "class_id": int(class_id),
+                            "seed": int(seed),
+                            "sample_index": int(sample_index),
+                            "original": image_rgb,
+                            "overlays": summary_overlays,
+                        }
+                    )
+
+    summary_path = save_uncertainty_summary(output_dir, checkpoint_label, summary_rows)
+    if summary_path is not None:
+        log_line(output_dir, f"[summary] saved {summary_path}")
 
     log_line(output_dir, "[uncertainty] finished")

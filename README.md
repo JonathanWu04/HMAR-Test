@@ -75,98 +75,16 @@ python sample.py --checkpoint=hmar-d30
 
 ## Token Uncertainty Heatmaps
 
-This fork adds a diagnostic mode for visualizing token-level probability
-distributions during HMAR sampling. The default `HMAR.generate(...)` behavior is
-unchanged. When `return_diagnostics=True` is used, generation also returns
-per-scale statistics computed from the logits before top-k/top-p truncation:
-
-- entropy, where higher values mean higher token uncertainty;
-- top-1 probability, where higher values mean higher confidence;
-- selected token probability;
-- top-1/top-2 probability margin;
-- top-k token ids and probabilities for each spatial token position.
-
-Generate heatmaps for one checkpoint:
+Generate token uncertainty heatmaps with the evaluation config for the selected checkpoint.
 
 ```bash
 python -m evaluate.generate_uncertainty_heatmaps \
   --checkpoint=hmar-d16 \
-  --uncertainty_classes=3_207 \
-  --uncertainty_seeds=13_14 \
-  --samples_per_class=4
+  --checkpoint_path=hmar-d16.pth
 ```
 
-Use an explicit finetuned checkpoint path:
-
-```bash
-python -m evaluate.generate_uncertainty_heatmaps \
-  --checkpoint=hmar-d16 \
-  --checkpoint_path=/path/to/ar-ckpt-last.pth \
-  --run_name=original-finetuned \
-  --uncertainty_classes=3 \
-  --uncertainty_seeds=13 \
-  --samples_per_class=4 \
-  --output_subdir=baseline/original-finetuned
-```
-
-The script follows the same config style as evaluation: `--checkpoint=hmar-d16`
-loads `config/evaluate/hmar-d16.yaml` for `depth`, `cfg`, `top_k`, `top_p`,
-`mask`, and related sampling settings. Extra diagnostic arguments can be passed
-from the command line or added to the same YAML file:
-
-```yaml
-uncertainty_classes: "3_207"
-uncertainty_seeds: "13_14"
-samples_per_class: 4
-diagnostic_topk: 5
-diagnostic_scales: "7_8_9"
-overlay_alpha: 0.55
-normalize_entropy_per_map: False
-run_name: original-finetuned
-output_dir: outputs
-output_subdir: baseline/original-finetuned
-```
-
-Outputs include:
-
-- generated sample PNGs;
-- entropy heatmaps and overlays;
-- top-1 probability heatmaps and overlays;
-- compressed `.npz` files containing the numeric token diagnostics;
-- JSON metadata with scale ids, pass names, sampling settings, classes, and seeds;
-- `log.txt` with run settings and per-record summary statistics.
-
-Entropy heatmaps use blue for low uncertainty, yellow for middle values, and red
-for high uncertainty. Top-1 probability heatmaps use red for low confidence and
-green for high confidence.
-
-By default outputs are written under:
-
-```bash
-outputs/uncertainty/<checkpoint>/
-```
-
-If `--output_subdir=baseline/original-finetuned` is provided, outputs are written
-under:
-
-```bash
-outputs/uncertainty/baseline/original-finetuned/
-```
-
-Inspect a diagnostics `.npz` file:
-
-```bash
-python -m evaluate.inspect_uncertainty_npz \
-  --npz=outputs/uncertainty/hmar-d16/hmar-d16_class003_seed13_diagnostics.npz
-```
-
-Save the per-record summary as CSV:
-
-```bash
-python -m evaluate.inspect_uncertainty_npz \
-  --npz=outputs/uncertainty/hmar-d16/hmar-d16_class003_seed13_diagnostics.npz \
-  --save_csv=outputs/uncertainty/hmar-d16/class003_seed13_summary.csv
-```
+Change classes, seeds, samples, and diagnostic settings in `config/evaluate/<checkpoint>.yaml`.
+See [UNCERTAINTY_HEATMAPS.md](UNCERTAINTY_HEATMAPS.md) for output format and implementation details.
 
 ## Evaluation
  
