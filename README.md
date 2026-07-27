@@ -78,12 +78,13 @@ python sample.py --checkpoint=hmar-d30
 Generate token uncertainty heatmaps with the evaluation config for the selected checkpoint.
 
 ```bash
+# 1) you can change classes, seeds, samples, and diagnostic settings from config/evaluate/hmar-d16.yaml
+# 2) for d20, d24, d30 etc, change the checkpoint accordingly
 python -m evaluate.generate_uncertainty_heatmaps \
   --checkpoint=hmar-d16 \
   --checkpoint_path=hmar-d16.pth
 ```
 
-Change classes, seeds, samples, and diagnostic settings in `config/evaluate/<checkpoint>.yaml`.
 See [UNCERTAINTY_HEATMAPS.md](UNCERTAINTY_HEATMAPS.md) for output format and implementation details.
 
 ## Evaluation
