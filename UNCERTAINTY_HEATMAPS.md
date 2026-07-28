@@ -69,19 +69,19 @@ normalize_entropy_per_map: False
 默认输出目录为：
 
 ```text
-outputs/uncertainty/experiment/<timestamp>/<checkpoint-path-label>/
+outputs/uncertainty/<checkpoint-path-label>_<timestamp>/
 ```
 
 例如：
 
 ```text
-outputs/uncertainty/experiment/20260727-153012/hmar-d16/
+outputs/uncertainty/hmar-d16_20260728-153012/
 ```
 
 如果 checkpoint 路径是嵌套路径，例如 `experiments/hmar-train-d16/hmar-d16.pth`，输出目录会类似：
 
 ```text
-outputs/uncertainty/experiment/20260727-153012/experiments_hmar-train-d16_hmar-d16/
+outputs/uncertainty/experiments_hmar-train-d16_hmar-d16_20260728-153012/
 ```
 
 母目录中会包含：
@@ -139,6 +139,8 @@ margin = top1_prob - top2_prob
 ```
 
 summary 中用于横向比较的主图是 entropy overlay。它只使用每个 scale 的 `next_scale` record，不把 masked refinement 的中间 step 混入 scale 列，方便直接比较从小 scale 到大 scale 的不确定性变化。
+
+为了让汇总图里的 uncertainty 颜色更清楚，summary overlay 会单独降低原图亮度，并使用比单样本 overlay 更高的 heatmap 不透明度。单样本文件夹里的普通 overlay 仍然使用 `overlay_alpha` 配置项。
 
 ## 可视化方式
 
@@ -220,13 +222,13 @@ uncertainty heatmap 功能主要涉及以下文件：
 
 ```bash
 python -m evaluate.inspect_uncertainty_npz \
-  --npz=outputs/uncertainty/experiment/<timestamp>/<checkpoint-path-label>/<checkpoint-label>_class003_seed13_diagnostics.npz
+  --npz=outputs/uncertainty/<checkpoint-path-label>_<timestamp>/<checkpoint-label>_class003_seed13_diagnostics.npz
 ```
 
 也可以导出 CSV：
 
 ```bash
 python -m evaluate.inspect_uncertainty_npz \
-  --npz=outputs/uncertainty/experiment/<timestamp>/<checkpoint-path-label>/<checkpoint-label>_class003_seed13_diagnostics.npz \
-  --save_csv=outputs/uncertainty/experiment/<timestamp>/<checkpoint-path-label>/class003_seed13_summary.csv
+  --npz=outputs/uncertainty/<checkpoint-path-label>_<timestamp>/<checkpoint-label>_class003_seed13_diagnostics.npz \
+  --save_csv=outputs/uncertainty/<checkpoint-path-label>_<timestamp>/class003_seed13_summary.csv
 ```

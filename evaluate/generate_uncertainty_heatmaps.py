@@ -19,6 +19,10 @@ from models import HMAR
 from utils.sampling_arg_util import Args, get_args
 
 
+SUMMARY_IMAGE_BRIGHTNESS = 0.45
+SUMMARY_OVERLAY_ALPHA = 0.78
+
+
 def parse_int_list(value: str) -> List[int]:
     if isinstance(value, (list, tuple)):
         return [int(item) for item in value]
@@ -85,9 +89,7 @@ def get_output_dir(args: Args, checkpoint_path: str) -> str:
     return os.path.join(
         args.output_dir,
         "uncertainty",
-        "experiment",
-        timestamp,
-        safe_path_label(checkpoint_path),
+        f"{safe_path_label(checkpoint_path)}_{timestamp}",
     )
 
 
@@ -172,6 +174,10 @@ def resize_rgb(rgb: np.ndarray, size) -> np.ndarray:
 
 def overlay(image_rgb: np.ndarray, heat_rgb: np.ndarray, alpha: float) -> np.ndarray:
     return np.clip(image_rgb * (1.0 - alpha) + heat_rgb * alpha, 0, 255).astype(np.uint8)
+
+
+def adjust_brightness(image_rgb: np.ndarray, factor: float) -> np.ndarray:
+    return np.clip(image_rgb.astype(np.float32) * factor, 0, 255).astype(np.uint8)
 
 
 def save_rgb(path: str, array: np.ndarray):
@@ -297,6 +303,11 @@ def resize_summary_tile(array: np.ndarray, tile_size: int) -> Image.Image:
     return Image.fromarray(array).resize((tile_size, tile_size), Image.Resampling.BILINEAR)
 
 
+def build_summary_overlay(image_rgb: np.ndarray, heat_rgb: np.ndarray) -> np.ndarray:
+    dark_image_rgb = adjust_brightness(image_rgb, SUMMARY_IMAGE_BRIGHTNESS)
+    return overlay(dark_image_rgb, heat_rgb, SUMMARY_OVERLAY_ALPHA)
+
+
 def save_uncertainty_summary(output_dir: str, label: str, summary_rows: List[dict]) -> Optional[str]:
     if len(summary_rows) == 0:
         return None
@@ -408,7 +419,13 @@ def save_uncertainty_summary(output_dir: str, label: str, summary_rows: List[dic
                     font=small_font,
                 )
             else:
-                canvas.paste(resize_summary_tile(payload["image"], tile_size), (x, y))
+                canvas.paste(
+                    resize_summary_tile(
+                        build_summary_overlay(row["original"], payload["heatmap"]),
+                        tile_size,
+                    ),
+                    (x, y),
+                )
             x += tile_size + gap
 
         canvas.paste(resize_summary_tile(row["original"], tile_size), (x, y))
@@ -548,7 +565,7 @@ if __name__ == "__main__":
                         if is_scale_summary_record(record):
                             summary_overlays[int(record["scale_index"])] = {
                                 "pn": int(record["pn"]),
-                                "image": visuals["entropy_overlay"],
+                                "heatmap": visuals["entropy"],
                             }
                         log_json(
                             output_dir,
